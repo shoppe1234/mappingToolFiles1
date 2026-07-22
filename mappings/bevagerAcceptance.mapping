@@ -1,0 +1,221 @@
+mapping: bevagerAcceptanceNA
+source:
+  schema: bevagerFlatSource
+  connector: DelimitedFlatFile
+target:
+  schema: bevagerCsvTarget
+  connector: DelimitedFlatFile
+
+# ---------------------------------------------------------------------------
+# Bevager 810 acceptance map -- OUR .mapping format, OUR engine, end-to-end.
+#
+# Migrated from the rosetta ruleset (bevager810_RS.ruleset) and adapted to the
+# flattened logical source (bevagerFlatSource.ffSchema). The flattener
+# (preflatten.py) performs ONLY Cleo's MultiFormat record-grouping -- the same
+# step Cleo runs before its ruleset -- folding the raw OIN_ / TPM_ physical feed
+# (bevagerOinSource.ffSchema) into one logical record per target row, in source
+# order. Every BUSINESS transformation below is executed by OUR engine, NOT the
+# flattener:
+#   - date("yyyyMMdd","MM/dd/yyyy")  invoice / due date reformatting
+#   - decimal(2)                     2dp display (InvoiceAmount, ExtendedPrice,
+#                                    WeightShipped, Taxes when present, fee amts)
+#   - normalize                      raw UnitPrice (NO padding -> 122.5 not 122.50)
+#   - stripZeros                     GTIN, Pack, QuantityShipped leading zeros
+#   - when: ... == "Y"               UoM override (EA / KG)
+#   - when: $v_langCode == "FR"      French description swap
+#   - when: $v_rowType == "A"        header-adjustment (Fuel / Min Order Fee) row
+#   - when: $v_tax is not empty      per-line tax presence
+#
+# A single for_each over Row (creates Record) keeps detail rows and the trailing
+# fuel/fee row of each invoice in one interleaved output stream, matching the
+# target file's per-invoice ordering. row_type drives the adjust overrides.
+#
+# LIVE-EDITABLE: each target column is driven by one explicit mapping line, so a
+# small edit deterministically changes the produced target file. Examples:
+#   * ExtendedPrice transform decimal(2) -> normalize  => 122.50 becomes 122.5.
+#   * Discount literal 0 -> 9                           => column 16 becomes 9.
+#   * UnitofMeasure default source                      => column 10 shifts.
+# ---------------------------------------------------------------------------
+
+variables:
+  v_ItemDescription: { type: String }
+  v_langCode:        { type: String }
+  v_lessCase:        { type: String }
+  v_catchWeight:     { type: String }
+  v_tax:             { type: String }
+  v_rowType:         { type: String }
+
+sections:
+  - name: rows
+    for_each: Row
+    creates: Record
+    mappings:
+      # stage row_type so the when: clauses can branch (bare source field names
+      # do not resolve to values inside a condition; $vars do)
+      - source: source.Row.current.row_type
+        target: $v_rowType
+
+      # --- Header fields (carried onto every row by the flattener) ---
+      - source: source.Row.current.HDRCustomerPONumber
+        target: PurchaseOrderNumber
+
+      - source: source.Row.current.HDRInvoiceNumber
+        target: InvoiceID
+
+      - source: source.Row.current.HDRInvoiceTotalNetAmount
+        target: InvoiceAmount
+        transform: decimal(2)
+
+      - value: "1234"
+        target: CustomerCode
+
+      - source: source.Row.current.HDRInvoiceDate
+        target: InvoiceDate
+        transform: date("yyyyMMdd", "MM/dd/yyyy")
+
+      - source: source.Row.current.HDRTermDueDate
+        target: DueDate
+        transform: date("yyyyMMdd", "MM/dd/yyyy")
+
+      # --- Description: English by default, French when language code = FR ---
+      - source: source.Row.current.HDRCustomerLanguageCode
+        target: $v_langCode
+
+      - source: source.Row.current.DTLItemDescription
+        target: $v_ItemDescription
+
+      - source: source.Row.current.DTLFRItemDescription
+        target: $v_ItemDescription
+        when: $v_langCode == "FR"
+
+      - source: $v_ItemDescription
+        target: ProductDescription
+
+      # --- Detail core ---
+      - source: source.Row.current.DTLDistributorItemNumber
+        target: DistributorProductID
+
+      - source: source.Row.current.DTLCaseGTIN
+        target: GTIN
+        transform: stripZeros
+        when: $v_rowType == "D"
+
+      # stage UoM-override flags into vars ($vars resolve in when:)
+      - source: source.Row.current.DTLLessCaseFlag
+        target: $v_lessCase
+
+      - source: source.Row.current.DTLCatchWeightFlag
+        target: $v_catchWeight
+
+      - source: source.Row.current.DTLSellingUnit
+        target: UnitofMeasure
+
+      - value: "EA"
+        target: UnitofMeasure
+        when: $v_lessCase == "Y"
+
+      - value: "KG"
+        target: UnitofMeasure
+        when: $v_catchWeight == "Y"
+
+      # col 11 Pack <- DTLShipQuantity ; col 15 QuantityShipped <- DTLPack
+      - source: source.Row.current.DTLShipQuantity
+        target: Pack
+        transform: stripZeros
+        when: $v_rowType == "D"
+
+      - source: source.Row.current.DTLSize
+        target: Size
+
+      - source: source.Row.current.DTLCatchWeightActual
+        target: WeightShipped
+        transform: decimal(2)
+        when: $v_rowType == "D"
+
+      - source: source.Row.current.DTLUnitPriceNet
+        target: UnitPrice
+        transform: normalize
+
+      - source: source.Row.current.DTLPack
+        target: QuantityShipped
+        transform: stripZeros
+        when: $v_rowType == "D"
+
+      - value: 0
+        target: Discount
+
+      # Taxes: 0 when no per-line tax, else the 2dp tax amount.
+      - source: source.Row.current.DTLOtherOrHSTTaxAmount
+        target: $v_tax
+
+      - value: 0
+        target: Taxes
+
+      - source: $v_tax
+        target: Taxes
+        transform: decimal(2)
+        when: $v_tax is not empty
+
+      - source: source.Row.current.DTLExtendedPriceNet
+        target: ExtendedPrice
+        transform: decimal(2)
+        when: $v_rowType == "D"
+
+      # --- Header-adjustment overrides (row_type = "A": Fuel Charge / Min Order
+      # Fee). These fire only on adjustment rows and overwrite the detail-shaped
+      # columns above. Empty literals blank the columns the fuel row omits. ---
+      - source: source.Row.current.HADJAjustmentOrFeeDescription
+        target: ProductDescription
+        when: $v_rowType == "A"
+
+      - source: source.Row.current.HADJEdiChargeCode
+        target: DistributorProductID
+        when: $v_rowType == "A"
+
+      - source: source.Row.current.HADJAdjustmentOrFeeAmount
+        target: UnitPrice
+        transform: decimal(2)
+        when: $v_rowType == "A"
+
+      - source: source.Row.current.HADJAdjustmentOrFeeAmount
+        target: ExtendedPrice
+        transform: decimal(2)
+        when: $v_rowType == "A"
+
+      - value: ""
+        target: GTIN
+        when: $v_rowType == "A"
+
+      - value: ""
+        target: UnitofMeasure
+        when: $v_rowType == "A"
+
+      - value: ""
+        target: Size
+        when: $v_rowType == "A"
+
+      - value: ""
+        target: WeightShipped
+        when: $v_rowType == "A"
+
+      - value: ""
+        target: Discount
+        when: $v_rowType == "A"
+
+      - value: 1
+        target: Pack
+        when: $v_rowType == "A"
+
+      - value: 1
+        target: QuantityShipped
+        when: $v_rowType == "A"
+
+      - value: 0
+        target: Taxes
+        when: $v_rowType == "A"
+
+env:
+  User_Reference_1: '"PO_" + HDRCustomerPONumber'
+  User_Reference_2: '"Cust_" + HDRCustomerNumber'
+  User_Reference_3: '"TP_" + TPEdiTradingPartnerCode'
+  User_Reference_4: '"INV_" + HDRInvoiceNumber'

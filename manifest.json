@@ -1,0 +1,19 @@
+{
+  "correlate": [
+    {
+      "content_hash": "03de7a307200e49605007e0263fd3ca6317e75df5ff8a7ee2f16d1920a5f7a01",
+      "object_name": "bevagerAcceptance",
+      "object_type": "mapping",
+      "version_no": 0
+    }
+  ],
+  "files": [
+    {
+      "name": "bevagerAcceptance",
+      "object_type": "mapping",
+      "repo_path": "mappings/bevagerAcceptance.mapping"
+    }
+  ],
+  "runtime_eligible": {},
+  "source_pairs": []
+}
