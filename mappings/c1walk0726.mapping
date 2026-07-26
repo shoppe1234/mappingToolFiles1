@@ -1,0 +1,183 @@
+mapping: c1walk0726
+source:
+  schema: tpm810SourceFF
+  connector: MultiFormatDelimitedFlatFile
+target:
+  schema: bevager810FF
+  connector: DelimitedFlatFile
+
+variables:
+  v_invoiceNumber:   { type: String }
+  v_ItemDescription: { type: String }
+  vGtinNbr:          { type: Number }
+  tInvoiceAmount:    { type: Number }
+  Taxes:             { type: Number, default: "0" }
+  TaxesLine:         { type: Number }
+  bAccumTaxes:       { type: String }
+  v_finalNumber:     { type: Number }
+  tmpDate:           { type: DateTime }
+  glb:               { type: ExtolGlobalSchemaRDO2 }
+
+sections:
+  - name: invoice_loop
+    for_each: InvRecordGrp
+    mappings:
+      - source: HDRInvoiceNumber
+        target: $v_invoiceNumber
+
+    children:
+      - name: detail_lines
+        for_each: DetailGrp
+        creates: Record
+        mappings:
+          # --- Header fields ---
+          - source: HDRCustomerNumber
+            target: [CustomerCode, $glb.String_Result_1]
+
+          - source: $v_invoiceNumber
+            target: [InvoiceID, $glb.String_Result_2]
+
+          - source: HDRCustomerPONumber
+            target: PurchaseOrderNumber
+
+          - source: HDRInvoiceDate
+            target: InvoiceDate
+            transform: date("yyyyMMdd", "MM/dd/yyyy")
+
+          - source: HDRInvoiceTotalNetAmount
+            target: [InvoiceAmount, $tInvoiceAmount]
+            transform: decimal(2)
+
+          # --- Detail fields ---
+          - source: DTLDistributorItemNumber
+            target: DistributorProductID
+
+          - source: DTLCaseGTIN
+            target: GTIN
+            transform: stripZeros
+
+          - source: DTLItemDescription
+            target: $v_ItemDescription
+
+          - source: DTLFRItemDescription
+            target: $v_ItemDescription
+            when: HDRCustomerLanguageCode == "FR"
+
+          - source: $v_ItemDescription
+            target: ProductDescription
+
+          - source: DTLShipQuantity
+            target: QuantityShipped
+            transform: normalize
+
+          - source: DTLCatchWeightActual
+            target: WeightShipped
+            transform: decimal(2)
+
+          - source: DTLUnitPriceNet
+            target: UnitPrice
+
+          - source: DTLPack
+            target: Pack
+
+          - source: DTLSize
+            target: Size
+
+          - source: DTLSellingUnit
+            target: UnitofMeasure
+
+          - value: "EA"
+            target: UnitofMeasure
+            when: DTLLessCaseFlag == "Y"
+
+          - value: "KG"
+            target: UnitofMeasure
+            when: DTLCatchWeightFlag == "Y"
+
+          - value: 0
+            target: Discount
+
+          - source: DTLExtendedPriceNet
+            target: ExtendedPrice
+            transform: decimal(2)
+
+          # --- Taxes ---
+          - value: 0
+            target: $Taxes
+
+          - source: DTLOtherOrHSTTaxAmount
+            target: $Taxes
+            when: DTLOtherOrHSTTaxAmount is not empty
+
+          - source: $Taxes
+            target: Taxes
+
+      - name: header_adjustments
+        for_each: HeaderAdjustment
+        creates: Record
+        mappings:
+          - source: HDRCustomerNumber
+            target: CustomerCode
+
+          - source: $v_invoiceNumber
+            target: InvoiceID
+
+          - source: HDRInvoiceDate
+            target: InvoiceDate
+            transform: date("yyyyMMdd", "MM/dd/yyyy")
+
+          - source: HADJEdiChargeCode
+            target: DistributorProductID
+
+          - source: HADJAjustmentOrFeeDescription
+            target: ProductDescription
+
+          - value: 1
+            target: QuantityShipped
+
+          - source: HADJAdjustmentOrFeeAmount
+            target: [ExtendedPrice, UnitPrice]
+            transform: [decimal(2), normalize]
+
+          - value: 1
+            target: Pack
+
+          - source: $tInvoiceAmount
+            target: InvoiceAmount
+
+          - source: HDRCustomerPONumber
+            target: PurchaseOrderNumber
+
+          - value: 0
+            target: $Taxes
+
+          - source: $Taxes
+            target: Taxes
+
+        post_rules:
+          - name: tax_flag_default
+            set: { $bAccumTaxes: "N" }
+
+          - name: tax_flag_applicable
+            when: HADJAdjustmentOrFeeCode in ["H770", "D360"]
+            set: { $bAccumTaxes: "Y" }
+
+          - name: tax_flag_summary_exclude
+            when: HADJAjustmentOrFeeDescription contains "SUMMARY"
+            set: { $bAccumTaxes: "N" }
+
+          - name: tax_accumulation
+            when: $bAccumTaxes == "Y"
+            steps:
+              - source: HADJAdjustmentOrFeeAmount
+                target: $TaxesLine
+                transform: [decimal(2), normalize]
+              - accumulate: { add: $TaxesLine, into: $Taxes, scale: 2 }
+              - source: $Taxes
+                target: Taxes
+
+env:
+  User_Reference_1: '"PO_" + HDRCustomerPONumber'
+  User_Reference_2: '"Cust_" + HDRCustomerNumber'
+  User_Reference_3: '"TP_" + TPEdiTradingPartnerCode'
+  User_Reference_4: '"INV_" + $v_invoiceNumber'
