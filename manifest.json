@@ -1,17 +1,17 @@
 {
   "correlate": [
     {
-      "content_hash": "4dd8d6e219e9b62262de487e2eeda4be6832ae0436d935189dbd1607b24560b2",
-      "object_name": "walk_git_040235",
+      "content_hash": "efff9c6bc60d8716a739c0ac4f660b5ce44a45e165f5f26a1331a327083b3285",
+      "object_name": "walk_git_040115",
       "object_type": "mapping",
       "version_no": 2
     }
   ],
   "files": [
     {
-      "name": "walk_git_040235",
+      "name": "walk_git_040115",
       "object_type": "mapping",
-      "repo_path": "mappings/walk_git_040235.mapping"
+      "repo_path": "mappings/walk_git_040115.mapping"
     }
   ],
   "runtime_eligible": {},
