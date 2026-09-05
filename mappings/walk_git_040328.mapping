@@ -1,0 +1,16 @@
+mapping: walk_git_040328
+source:
+  schema: x12_850
+  connector: ''
+target:
+  schema: x12_850
+  connector: ''
+sections:
+- name: main
+  for_each: BEG
+  creates: BEG
+  mappings:
+  - source: source.BEG.current.353
+    target: '353'
+  - source: source.BEG.current.324
+    target: '324'
